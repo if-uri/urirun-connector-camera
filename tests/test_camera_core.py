@@ -461,3 +461,18 @@ def test_ledger_appends_on_receipt_and_respects_off(tmp_path, monkeypatch):
     monkeypatch.setenv("URIRUN_LEDGER", "off")
     c.receipt_parse(text="X 1,00\nSUMA PLN 1,00")
     assert len([l for l in open(ledger) if l.strip()]) == 1
+
+
+def test_static_vs_live_contract_on_outputs(tmp_path):
+    p = str(tmp_path / "r.png"); _make_image(p, text="X 9,99")
+    a = c.analyze(image=p, output_dir=str(tmp_path / "o"), ocr=False)
+    assert a["kind"] == "scan" and a["live"] is False        # captured/processed = artifact
+    r = c.receipt_parse(text="SUMA PLN 9,99")
+    assert r["kind"] == "receipt" and r["live"] is False
+
+
+def test_ledger_records_are_marked_static(tmp_path, monkeypatch):
+    led = str(tmp_path / "l.jsonl"); monkeypatch.setenv("URIRUN_LEDGER", led)
+    c.receipt_parse(text="SUMA PLN 1,00")
+    rec = json.loads([l for l in open(led) if l.strip()][0])
+    assert rec["live"] is False

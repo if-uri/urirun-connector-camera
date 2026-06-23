@@ -1020,10 +1020,11 @@ def photo_ocr(device: str = "", image: str = "", backend: str = "auto", warmup: 
     if not res.get("ok"):
         return res
     ocr = res.get("ocr", {})
-    return urirun.ok(connector=CONNECTOR_ID, device=res.get("device", ""),
-                     photo=res.get("photo", {}).get("path", ""), target=ocr.get("target", ""),
-                     beep=res.get("beep", {}),
-                     backend=ocr.get("backend", ""), text=ocr.get("text", ""), chars=ocr.get("chars", 0)), "text") if False else _tag(urirun.ok(connector=CONNECTOR_ID, device=res.get("device", ""), photo=res.get("photo", {}).get("path", ""), target=ocr.get("target", ""), beep=res.get("beep", {}), backend=ocr.get("backend", ""), text=ocr.get("text", ""), chars=ocr.get("chars", 0)), "text")
+    return _tag(urirun.ok(connector=CONNECTOR_ID, device=res.get("device", ""),
+                          photo=res.get("photo", {}).get("path", ""), target=ocr.get("target", ""),
+                          beep=res.get("beep", {}),
+                          backend=ocr.get("backend", ""), text=ocr.get("text", ""),
+                          chars=ocr.get("chars", 0)), "text")
 
 
 def _contains(text: str, needle: str) -> bool:
@@ -1455,10 +1456,10 @@ def receipt_parse(device: str = "", image: str = "", bytes_b64: str = "", text: 
     _ledger("receipt", source="ocr", total=parsed.get("total"), currency=parsed.get("currency"),
             itemCount=parsed.get("itemCount"), nip=parsed.get("nip"),
             photo=(res.get("photo") or {}).get("path", ""))
-    return urirun.ok(connector=CONNECTOR_ID, source="ocr",
-                     photo=(res.get("photo") or {}).get("path", ""),
-                     ocrBackend=(res.get("ocr") or {}).get("backend", ""),
-                     object=res.get("object"), text=ocr_text[:max_chars], **parsed), "receipt")
+    return _tag(urirun.ok(connector=CONNECTOR_ID, source="ocr",
+                          photo=(res.get("photo") or {}).get("path", ""),
+                          ocrBackend=(res.get("ocr") or {}).get("backend", ""),
+                          object=res.get("object"), text=ocr_text[:max_chars], **parsed), "receipt")
 
 
 def urirun_bindings() -> dict[str, Any]:
