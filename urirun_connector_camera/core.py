@@ -817,9 +817,10 @@ def list_cameras() -> dict[str, Any]:
                                 "videoNodes": cam.get("videoNodes", [])})
     except Exception:  # noqa: BLE001
         pass
-    return urirun.ok(connector=CONNECTOR_ID, count=len(nodes), videoNodes=nodes,
-                     cameras=cameras, default=_default_device(),
-                     capture={"ffmpeg": bool(shutil.which("ffmpeg")), "tesseract": bool(shutil.which("tesseract"))})
+    return _tag(urirun.ok(connector=CONNECTOR_ID, count=len(nodes), videoNodes=nodes,
+                          cameras=cameras, default=_default_device(),
+                          capture={"ffmpeg": bool(shutil.which("ffmpeg")), "tesseract": bool(shutil.which("tesseract"))}),
+                "device-list")
 
 
 @CAMERA.handler("photo/command/capture", isolated=True,
