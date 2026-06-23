@@ -32,6 +32,34 @@ CONNECTOR_ID = "camera"
 CAMERA = urirun.connector(CONNECTOR_ID, scheme="camera", target="host", meta={"label": "Camera capture + OCR"})
 
 
+def _tag(result: dict[str, Any], kind: str, *, live: bool = False) -> dict[str, Any]:
+    """Stamp a result with the static-vs-live contract: `kind` (photo/scan/text/stream/…) and
+    `live` (true = self-updating widget / live view; false = a frozen, immutable artifact). A
+    UI renders by `live`, not by media type — a captured frame and a recorded clip are both
+    artifacts; only an open stream is a widget."""
+    if isinstance(result, dict):
+        result["kind"] = kind
+        result["live"] = live
+    return result
+
+
+def _ledger(event: str, **fields: Any) -> None:
+    """Best-effort append of one transaction line to the shared ledger so every run leaves a
+    trace. Path: env URIRUN_LEDGER (default ~/.urirun/ledger.jsonl); set to 0/off to disable.
+    Never raises and never logs secrets or full OCR text."""
+    path = os.getenv("URIRUN_LEDGER", os.path.expanduser("~/.urirun/ledger.jsonl"))
+    if path.lower() in ("0", "off", "none", ""):
+        return
+    try:
+        rec = {"ts": time.time(), "connector": CONNECTOR_ID, "event": event,
+               "live": False, **fields}  # ledger only holds frozen artifacts, never widgets
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    except Exception:  # noqa: BLE001 - telemetry must never break a route
+        pass
+
+
 # --------------------------------------------------------------------------- helpers
 
 def _device_path(device: str) -> str:
@@ -828,7 +856,7 @@ def capture(device: str = "", output: str = "", backend: str = "auto", warmup: i
         payload["bytes_b64"] = b64
         if not b64:
             payload["base64_skipped"] = f"image is {size} bytes > max_base64_bytes"
-    return urirun.ok(connector=CONNECTOR_ID, **payload)
+    return _tag(urirun.ok(connector=CONNECTOR_ID, **payload), "photo")
 
 
 @CAMERA.handler("photo/query/analyze", isolated=True,
@@ -932,7 +960,7 @@ def analyze(device: str = "", image: str = "", output_dir: str = "", backend: st
             "summary": str(report.get("description", {}).get("text", "")),
         }
 
-    return urirun.ok(connector=CONNECTOR_ID, outputDir=out_dir, **report)
+    return _tag(urirun.ok(connector=CONNECTOR_ID, outputDir=out_dir, **report), "scan")
 
 
 @CAMERA.handler("photo/query/describe", isolated=True,
@@ -969,10 +997,10 @@ def describe_photo(device: str = "", image: str = "", backend: str = "auto", war
                                connector=CONNECTOR_ID, device=device_used, backend=cap.get("backend"),
                                attempts=cap.get("attempts", []))
     w, h = _image_size(photo)
-    return urirun.ok(connector=CONNECTOR_ID, device=device_used,
+    return _tag(urirun.ok(connector=CONNECTOR_ID, device=device_used,
                      photo={"path": photo, "width": w, "height": h, "bytes": os.path.getsize(photo)},
                      beep=beep_result,
-                     description=_describe(photo))
+                     description=_describe(photo)), "description")
 
 
 @CAMERA.handler("photo/query/ocr", isolated=True,
@@ -995,7 +1023,7 @@ def photo_ocr(device: str = "", image: str = "", backend: str = "auto", warmup: 
     return urirun.ok(connector=CONNECTOR_ID, device=res.get("device", ""),
                      photo=res.get("photo", {}).get("path", ""), target=ocr.get("target", ""),
                      beep=res.get("beep", {}),
-                     backend=ocr.get("backend", ""), text=ocr.get("text", ""), chars=ocr.get("chars", 0))
+                     backend=ocr.get("backend", ""), text=ocr.get("text", ""), chars=ocr.get("chars", 0)), "text") if False else _tag(urirun.ok(connector=CONNECTOR_ID, device=res.get("device", ""), photo=res.get("photo", {}).get("path", ""), target=ocr.get("target", ""), beep=res.get("beep", {}), backend=ocr.get("backend", ""), text=ocr.get("text", ""), chars=ocr.get("chars", 0)), "text")
 
 
 def _contains(text: str, needle: str) -> bool:
@@ -1106,9 +1134,12 @@ def inspect_photo(
         except OSError as exc:
             inspection["auditLogError"] = str(exc)
 
+    _ledger("inspect", passed=inspection["passed"], alerts=[a["code"] for a in alerts],
+            textChars=inspection["textChars"], device=res.get("device", ""),
+            photo=(res.get("photo") or {}).get("path", ""))
     if alerts and fail_on_alert:
         return urirun.fail("inspection failed", connector=CONNECTOR_ID, inspection=inspection, **payload)
-    return urirun.ok(connector=CONNECTOR_ID, inspection=inspection, **payload)
+    return _tag(urirun.ok(connector=CONNECTOR_ID, inspection=inspection, **payload), "inspection")
 
 
 @CAMERA.handler("photo/query/compare", isolated=True,
@@ -1183,7 +1214,7 @@ def compare(device: str = "", reference: str = "", image: str = "", output_dir: 
                "changeBeep": change_beep, **{k: v for k, v in diff.items() if k != "ok"}}
     if changed and fail_on_change:
         return urirun.fail("change detected", connector=CONNECTOR_ID, **payload)
-    return urirun.ok(connector=CONNECTOR_ID, **payload)
+    return _tag(urirun.ok(connector=CONNECTOR_ID, **payload), "comparison")
 
 
 @CAMERA.handler("photo/query/barcodes", isolated=True,
@@ -1235,7 +1266,7 @@ def read_barcodes(device: str = "", image: str = "", output_dir: str = "", backe
     if fail_if_missing and not found:
         reason = f"required barcode not found: {required}" if required else "no barcode detected"
         return urirun.fail(reason, connector=CONNECTOR_ID, **payload)
-    return urirun.ok(connector=CONNECTOR_ID, **payload)
+    return _tag(urirun.ok(connector=CONNECTOR_ID, **payload), "barcodes")
 
 
 def _decode_b64_to_file(bytes_b64: str, out_dir: str, filename: str,
@@ -1315,6 +1346,10 @@ def ingest(bytes_b64: str = "", filename: str = "photo.jpg", action: str = "anal
         res["action"] = act
         res["uploadBytes"] = size
         res["photo"] = res.get("photo") or photo
+    # inspect/receipt already logged their own line; record the rest of the mobile uploads here
+    if act in ("analyze", "barcodes", "ocr", "describe"):
+        _ledger("ingest", action=act, source="browser-upload", uploadBytes=size,
+                ok=bool(isinstance(res, dict) and res.get("ok", True)))
     return res
 
 
@@ -1394,7 +1429,9 @@ def receipt_parse(device: str = "", image: str = "", bytes_b64: str = "", text: 
     cropped to the sheet (`target=receipt`) and deskewed before OCR, then parsed."""
     if text.strip():
         parsed = _parse_receipt(text)
-        return urirun.ok(connector=CONNECTOR_ID, source="text", **parsed)
+        _ledger("receipt", source="text", total=parsed.get("total"), currency=parsed.get("currency"),
+                itemCount=parsed.get("itemCount"), nip=parsed.get("nip"))
+        return _tag(urirun.ok(connector=CONNECTOR_ID, source="text", **parsed), "receipt")
 
     out_dir = os.path.expanduser(output_dir) if output_dir else tempfile.mkdtemp(prefix="urirun-receipt-")
     os.makedirs(out_dir, exist_ok=True)
@@ -1415,10 +1452,13 @@ def receipt_parse(device: str = "", image: str = "", bytes_b64: str = "", text: 
         return res
     ocr_text = str((res.get("ocr") or {}).get("text") or "")
     parsed = _parse_receipt(ocr_text)
+    _ledger("receipt", source="ocr", total=parsed.get("total"), currency=parsed.get("currency"),
+            itemCount=parsed.get("itemCount"), nip=parsed.get("nip"),
+            photo=(res.get("photo") or {}).get("path", ""))
     return urirun.ok(connector=CONNECTOR_ID, source="ocr",
                      photo=(res.get("photo") or {}).get("path", ""),
                      ocrBackend=(res.get("ocr") or {}).get("backend", ""),
-                     object=res.get("object"), text=ocr_text[:max_chars], **parsed)
+                     object=res.get("object"), text=ocr_text[:max_chars], **parsed), "receipt")
 
 
 def urirun_bindings() -> dict[str, Any]:

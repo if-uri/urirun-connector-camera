@@ -19,6 +19,8 @@ dominant object → OCR/inspect it.**
 | `camera://host/photo/query/compare` | Change/motion detection — two files, reference vs live frame, or two frames `interval_ms` apart → `changed` + `changeRatio` + changed region |
 | `camera://host/photo/query/barcodes` | Capture → decode barcodes / QR codes (pyzbar) → type, data, rect; `required` + `fail_if_missing` to assert an expected code |
 | `camera://host/photo/query/ocr` | Capture (optionally crop) → return just the text |
+| `camera://host/receipt/query/parse` | Scan a receipt (paragon) → structured JSON: line items (name+price), total, currency, date, NIP. Give `text` to parse existing OCR |
+| `camera://host/upload/command/ingest` | Process a browser/mobile base64 frame → analyze\|inspect\|barcodes\|ocr\|describe\|receipt |
 
 ## Pipeline (`analyze`)
 

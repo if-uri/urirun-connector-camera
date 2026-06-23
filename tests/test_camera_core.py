@@ -447,3 +447,17 @@ def test_capture_live(tmp_path):
     out = str(tmp_path / "live.jpg")
     r = c.capture(output=out, beep=False)
     assert r["ok"] and os.path.isfile(out) and r["width"] > 0
+
+
+def test_ledger_appends_on_receipt_and_respects_off(tmp_path, monkeypatch):
+    ledger = str(tmp_path / "ledger.jsonl")
+    monkeypatch.setenv("URIRUN_LEDGER", ledger)
+    c.receipt_parse(text="SKLEP\nNIP 778-14-22-455\nKawa 9,90\nSUMA PLN 9,90")
+    lines = [l for l in open(ledger, encoding="utf-8") if l.strip()]
+    assert len(lines) == 1
+    rec = json.loads(lines[0])
+    assert rec["connector"] == "camera" and rec["event"] == "receipt" and rec["total"] == 9.90
+    # disabling writes nothing more
+    monkeypatch.setenv("URIRUN_LEDGER", "off")
+    c.receipt_parse(text="X 1,00\nSUMA PLN 1,00")
+    assert len([l for l in open(ledger) if l.strip()]) == 1
