@@ -15,7 +15,8 @@ dependencies = ["urirun>=0.4.14", "pillow>=10"]
 [project.optional-dependencies]
 opencv = ["opencv-python>=4.8"]
 scene = ["urirun-connector-ocr"]
-test = ["pytest>=8", "pillow>=10"]
+barcode = ["pyzbar>=0.1.9"]
+test = ["pytest>=8", "pillow>=10", "pyzbar>=0.1.9", "qrcode>=7"]
 
 [project.urls]
 Homepage = "https://connect.ifuri.com/connectors/camera"

@@ -1,12 +1,105 @@
 {
   "id": "camera",
   "name": "Camera capture + OCR",
-  "uriSchemes": ["camera"],
+  "uriSchemes": [
+    "camera"
+  ],
   "status": "available",
   "category": "Hardware",
-  "summary": "Turn a USB/built-in webcam into data over camera:// URIs: discover cameras, capture a still frame, describe what is in the photo, find and crop to the dominant object, and OCR it. Capture uses ffmpeg (OpenCV optional); scene understanding + object detection reuse the img2nl engine via urirun-connector-ocr (Pillow edge/stats fallback); OCR uses tesseract, upgrading to the richer OCR connector backends automatically.",
-  "description": "camera:// is the capture+understand layer on top of usb:// camera discovery. camera://host/devices/query/list lists cameras (product names + /dev/video* nodes via the usb connector). camera://host/photo/command/capture grabs one still frame. camera://host/photo/query/describe returns a natural-language description of what is in the photo — scene, dominant colours, detected objects/regions, barcodes — using the img2nl engine when available. camera://host/photo/query/analyze runs the full pipeline: capture (or reuse a given image), describe it, detect the dominant object (img2nl region detector, else Pillow edge density), crop to it ('dociąć do obiektu'), and OCR the crop — returning the photo, description, object bbox + crop path, and recognised text. camera://host/photo/query/ocr just returns the text. Dependency-light core (ffmpeg + Pillow + tesseract); img2nl/imgl and OpenCV are optional upgrades.",
-  "requires": {"system": ["ffmpeg (capture)", "tesseract (OCR)", "linux /dev/video*"], "python": ["urirun", "pillow"], "optional": ["urirun-connector-ocr (img2nl scene description + richer OCR)", "opencv-python (alt capture)", "urirun-connector-usb (named camera discovery)"]},
-  "keywords": ["camera", "webcam", "capture", "photo", "ocr", "tesseract", "ffmpeg", "object-detection", "scene-description", "img2nl", "crop", "v4l2", "usb"],
-  "publisher": "if-uri"
+  "summary": "Turn a USB/built-in webcam into data over camera:// URIs: discover cameras, beep before scan, capture a still frame, describe what is in the photo, find and crop to the dominant object, OCR it, and run simple inspection/alert rules. Capture uses ffmpeg (OpenCV optional); scene understanding + object detection reuse the img2nl engine via urirun-connector-ocr (Pillow edge/stats fallback); OCR uses tesseract, upgrading to the richer OCR connector backends automatically.",
+  "description": "camera:// is the capture+understand layer on top of usb:// camera discovery. camera://host/devices/query/list lists cameras (product names + /dev/video* nodes via the usb connector). camera://host/photo/command/capture grabs one still frame and can emit a pre-scan beep so a human knows exactly when scanning happens. camera://host/photo/query/describe returns a natural-language description of what is in the photo — scene, dominant colours, detected objects/regions, barcodes — using the img2nl engine when available. camera://host/photo/query/analyze runs the full pipeline: capture (or reuse a given image), describe it, crop to the `target` ('document'/'receipt'/'paragon' tightly crops the sheet via a numpy projection detector, 'object' crops the dominant object, 'auto' picks document-or-object, 'none' skips), optionally deskew=true to perspective-correct a document/receipt shot at an angle (4-point warp; OpenCV corner detection when present, else numpy; Pillow warp), and OCR the crop — returning the photo, description, bbox/corners + crop path, and recognised text. camera://host/photo/query/inspect adds simple rule checks (required/forbidden text, min OCR length, object required, brightness range), returns structured alerts with optional beep_on_alert/fail_on_alert, and persists a verdict (inspection.json sidecar + optional JSONL audit_log) so alerting has a durable trail without a separate log connector. camera://host/photo/query/compare does change/motion detection — compare two files, a reference vs a fresh frame, or two frames captured interval_ms apart — returning a change ratio, a changed flag and the changed region, with optional beep_on_change/fail_on_change to trigger scan-on-motion or stop-on-change flows. camera://host/photo/query/ocr just returns the text. camera://host/receipt/query/parse scans a paragon (or parses given OCR text) into structured JSON: line items (name + price), total, currency, date and NIP. Dependency-light core (ffmpeg + Pillow + tesseract); img2nl/imgl and OpenCV are optional upgrades.",
+  "requires": {
+    "system": [
+      "ffmpeg (capture)",
+      "tesseract (OCR)",
+      "linux /dev/video*"
+    ],
+    "python": [
+      "urirun",
+      "pillow"
+    ],
+    "optional": [
+      "urirun-connector-ocr (img2nl scene description + richer OCR)",
+      "pyzbar + libzbar0 (barcode / QR decoding)",
+      "opencv-python (alt capture)",
+      "urirun-connector-usb (named camera discovery)"
+    ]
+  },
+  "keywords": [
+    "camera",
+    "webcam",
+    "capture",
+    "photo",
+    "ocr",
+    "tesseract",
+    "ffmpeg",
+    "object-detection",
+    "scene-description",
+    "img2nl",
+    "crop",
+    "v4l2",
+    "usb",
+    "beep",
+    "inspection",
+    "alert",
+    "motion-detection",
+    "change-detection",
+    "audit",
+    "barcode",
+    "qr-code",
+    "pyzbar",
+    "receipt",
+    "document-detection",
+    "deskew",
+    "perspective-correction"
+  ],
+  "publisher": {
+    "name": "if-uri",
+    "url": "https://ifuri.com",
+    "github": "https://github.com/if-uri"
+  },
+  "routes": [
+    "camera://host/devices/query/list",
+    "camera://host/photo/command/capture",
+    "camera://host/photo/query/analyze",
+    "camera://host/photo/query/barcodes",
+    "camera://host/photo/query/compare",
+    "camera://host/photo/query/describe",
+    "camera://host/photo/query/inspect",
+    "camera://host/photo/query/ocr",
+    "camera://host/receipt/query/parse",
+    "camera://host/upload/command/ingest"
+  ],
+  "useCases": [
+    "Capture a webcam frame and OCR it.",
+    "Describe what is in a photo — scene, objects, barcodes.",
+    "Inspect a scanned item against rules and raise alerts.",
+    "Detect change/motion between two frames.",
+    "Decode barcodes / QR codes and assert an expected code is present.",
+    "Scan a receipt/document (paragon) cropped tightly to the sheet before OCR (target=receipt).",
+    "Parse a receipt into structured JSON — line items, total, currency, date, NIP."
+  ],
+  "examples": [
+    {
+      "title": "Capture and analyse",
+      "uri": "camera://host/photo/query/analyze",
+      "payload": {
+        "device": "/dev/video0"
+      }
+    },
+    {
+      "title": "List cameras",
+      "uri": "camera://host/devices/query/list",
+      "payload": {}
+    }
+  ],
+  "provenance": "verified",
+  "docsUrl": "https://github.com/if-uri/urirun-connector-camera",
+  "install": {
+    "mode": "urirun-extra",
+    "pipSpec": "urirun-connector-camera @ git+https://github.com/if-uri/urirun-connector-camera.git@v0.1.0"
+  },
+  "adapterKinds": [
+    "local-function"
+  ]
 }
