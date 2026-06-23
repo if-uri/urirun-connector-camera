@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "urirun-connector-camera"
+version = "0.1.0"
+description = "Webcam capture + crop-to-object + OCR connector for ifuri and urirun (camera://)"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "Apache-2.0"
+authors = [{ name = "if-uri" }]
+dependencies = ["urirun>=0.4.14", "pillow>=10"]
+
+[project.optional-dependencies]
+opencv = ["opencv-python>=4.8"]
+scene = ["urirun-connector-ocr"]
+test = ["pytest>=8", "pillow>=10"]
+
+[project.urls]
+Homepage = "https://connect.ifuri.com/connectors/camera"
+Repository = "https://github.com/if-uri/urirun-connector-camera"
+
+[project.scripts]
+urirun-camera = "urirun_connector_camera.core:main"
+
+[project.entry-points."urirun.bindings"]
+camera = "urirun_connector_camera.core:urirun_bindings"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["urirun_connector_camera*"]
+
+[tool.setuptools.package-data]
+urirun_connector_camera = ["connector.manifest.json"]

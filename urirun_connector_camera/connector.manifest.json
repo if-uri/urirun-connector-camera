@@ -1,0 +1,12 @@
+{
+  "id": "camera",
+  "name": "Camera capture + OCR",
+  "uriSchemes": ["camera"],
+  "status": "available",
+  "category": "Hardware",
+  "summary": "Turn a USB/built-in webcam into data over camera:// URIs: discover cameras, capture a still frame, describe what is in the photo, find and crop to the dominant object, and OCR it. Capture uses ffmpeg (OpenCV optional); scene understanding + object detection reuse the img2nl engine via urirun-connector-ocr (Pillow edge/stats fallback); OCR uses tesseract, upgrading to the richer OCR connector backends automatically.",
+  "description": "camera:// is the capture+understand layer on top of usb:// camera discovery. camera://host/devices/query/list lists cameras (product names + /dev/video* nodes via the usb connector). camera://host/photo/command/capture grabs one still frame. camera://host/photo/query/describe returns a natural-language description of what is in the photo — scene, dominant colours, detected objects/regions, barcodes — using the img2nl engine when available. camera://host/photo/query/analyze runs the full pipeline: capture (or reuse a given image), describe it, detect the dominant object (img2nl region detector, else Pillow edge density), crop to it ('dociąć do obiektu'), and OCR the crop — returning the photo, description, object bbox + crop path, and recognised text. camera://host/photo/query/ocr just returns the text. Dependency-light core (ffmpeg + Pillow + tesseract); img2nl/imgl and OpenCV are optional upgrades.",
+  "requires": {"system": ["ffmpeg (capture)", "tesseract (OCR)", "linux /dev/video*"], "python": ["urirun", "pillow"], "optional": ["urirun-connector-ocr (img2nl scene description + richer OCR)", "opencv-python (alt capture)", "urirun-connector-usb (named camera discovery)"]},
+  "keywords": ["camera", "webcam", "capture", "photo", "ocr", "tesseract", "ffmpeg", "object-detection", "scene-description", "img2nl", "crop", "v4l2", "usb"],
+  "publisher": "if-uri"
+}

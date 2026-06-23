@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.benchmarks/
+.venv/
+venv/
+build/
+dist/
+# Node
+node_modules/
+# PHP
+vendor/
+# urirun / tooling
+.docker-smoke/
+.urirun/
+.code2llm_cache/
+# Editors / OS
+.idea/
+.vscode/
+.DS_Store
+# Env / secrets
+.env
+.env.local
+*.pem
+*.key
