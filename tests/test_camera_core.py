@@ -501,3 +501,26 @@ def test_document_crop_ignores_bright_L_distractor(tmp_path):
     # the crop centre must land on the receipt (≈540,1155), NOT the tape L (≈190,490)
     assert 330 <= cx <= 740 and 950 <= cy <= 1360, f"crop centred on {cx},{cy} (distractor?)"
     assert w < 600 and h < 600                                  # tight to the receipt, not whole frame
+
+
+def test_ingest_store_persists_only_artifact_pdf(tmp_path, monkeypatch):
+    """Cache-vs-store: store=True persists the cropped sheet as a document PDF; store=False
+    keeps everything ephemeral (no artifact written)."""
+    docs = tmp_path / "documents"
+    monkeypatch.setenv("URIRUN_DOCUMENTS_DIR", str(docs))
+    p = str(tmp_path / "r.png")
+    _make_image(p, text="SUMA 9,99")
+    b64 = _b64_of_image(p)
+
+    # store=False → ephemeral, nothing persisted
+    r0 = c.ingest(bytes_b64=b64, action="analyze", output_dir=str(tmp_path / "o0"), store=False)
+    assert r0["stored"] is False and r0.get("cache") is True
+    assert not docs.exists() or not any(docs.rglob("*.pdf"))
+
+    # store=True → exactly one document PDF artifact in the store
+    r1 = c.ingest(bytes_b64=b64, action="analyze", output_dir=str(tmp_path / "o1"),
+                  store=True, store_name="paragon")
+    assert r1["stored"] is True
+    assert r1["artifact"]["kind"] == "document-pdf" and r1["artifact"]["live"] is False
+    pdfs = list(docs.rglob("*.pdf"))
+    assert len(pdfs) == 1 and pdfs[0].name.startswith("paragon_")

@@ -1380,13 +1380,16 @@ def ingest(bytes_b64: str = "", filename: str = "photo.jpg", action: str = "anal
            output_dir: str = "", lang: str = "eng+pol", crop: bool = True, target: str = "auto",
            deskew: bool = False, required_text: str = "", forbidden_text: str = "", min_chars: int = 1,
            require_object: bool = False, required: str = "", fail_if_missing: bool = False,
-           max_chars: int = 12000, audit_log: str = "",
+           max_chars: int = 12000, audit_log: str = "", store: bool = False, store_name: str = "paragon",
            max_input_bytes: int = 20 * 1024 * 1024, timeout: int = 30) -> dict[str, Any]:
     """Run the camera pipeline on a frame uploaded as base64 — the entry point for a phone
     or tablet capturing through the browser (getUserMedia) instead of a local /dev/video*.
-    `action` selects what to do: analyze | inspect | barcodes | describe | ocr. `target`
-    chooses the crop (document/receipt, object, or auto). No capture or beep happens here;
-    the bytes are decoded to a file and passed to the matching route."""
+    `action` selects what to do: analyze | inspect | barcodes | describe | ocr | receipt.
+    `target` chooses the crop (document/receipt, object, or auto).
+
+    Cache vs store: the uploaded frame and crop are EPHEMERAL (a cache in a temp dir) and are
+    not kept. Only with store=True is the final artifact persisted — the cropped sheet rendered
+    to a document PDF in the documents store (URIRUN_DOCUMENTS_DIR). No capture or beep here."""
     if not bytes_b64:
         return urirun.fail("bytes_b64 is required", connector=CONNECTOR_ID)
     out_dir = os.path.expanduser(output_dir) if output_dir else tempfile.mkdtemp(prefix="urirun-camera-upload-")
@@ -1425,10 +1428,20 @@ def ingest(bytes_b64: str = "", filename: str = "photo.jpg", action: str = "anal
         res["action"] = act
         res["uploadBytes"] = size
         res["photo"] = res.get("photo") or photo
+        # cache-vs-store: the frame/crop in out_dir are ephemeral; persist only the artifact.
+        if store and res.get("ok", True):
+            crop_src = (res.get("object") or {}).get("cropPath") or res.get("photo") or photo
+            artifact = _persist_artifact(crop_src, name=store_name)
+            res["artifact"] = artifact
+            res["stored"] = bool(artifact.get("ok"))
+        else:
+            res["stored"] = False
+            res["cache"] = True
     # inspect/receipt already logged their own line; record the rest of the mobile uploads here
     if act in ("analyze", "barcodes", "ocr", "describe"):
         _ledger("ingest", action=act, source="browser-upload", uploadBytes=size,
-                ok=bool(isinstance(res, dict) and res.get("ok", True)))
+                ok=bool(isinstance(res, dict) and res.get("ok", True)),
+                stored=bool(isinstance(res, dict) and res.get("stored")))
     return res
 
 
