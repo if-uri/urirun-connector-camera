@@ -58,14 +58,12 @@ def _persist_artifact(src_image: str, *, name: str = "paragon") -> dict[str, Any
 
 
 def _tag(result: dict[str, Any], kind: str, *, live: bool = False) -> dict[str, Any]:
-    """Stamp a result with the static-vs-live contract: `kind` (photo/scan/text/stream/…) and
-    `live` (true = self-updating widget / live view; false = a frozen, immutable artifact). A
-    UI renders by `live`, not by media type — a captured frame and a recorded clip are both
-    artifacts; only an open stream is a widget."""
-    if isinstance(result, dict):
-        result["kind"] = kind
-        result["live"] = live
-    return result
+    """Stamp a result with the static-vs-live artifact/widget contract.
+
+    Thin wrapper over the shared ``urirun.tag`` SDK helper so every connector declares
+    its output the same way (``kind`` + ``live``); kept as a local name for the many
+    call sites here. See ``urirun.tag`` for the contract."""
+    return urirun.tag(result, kind, live=live)
 
 
 def _ledger(event: str, **fields: Any) -> None:
