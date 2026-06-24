@@ -32,6 +32,31 @@ CONNECTOR_ID = "camera"
 CAMERA = urirun.connector(CONNECTOR_ID, scheme="camera", target="host", meta={"label": "Camera capture + OCR"})
 
 
+def _documents_dir() -> str:
+    """Permanent artifact store (env URIRUN_DOCUMENTS_DIR, default ~/.urirun/documents)."""
+    return os.path.expanduser(os.getenv("URIRUN_DOCUMENTS_DIR", "~/.urirun/documents"))
+
+
+def _persist_artifact(src_image: str, *, name: str = "paragon") -> dict[str, Any]:
+    """Store ONLY the final artifact: render the cropped scan to a document PDF in the
+    permanent documents store. Everything upstream (raw frame, crop, live preview) stays
+    ephemeral/cache and is never persisted here — only the accepted artifact is kept."""
+    if not src_image or not os.path.isfile(src_image):
+        return {"ok": False, "error": "no artifact image to store"}
+    try:
+        from PIL import Image  # type: ignore
+        month = time.strftime("%Y-%m", time.gmtime())
+        ts = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+        dest_dir = os.path.join(_documents_dir(), month)
+        os.makedirs(dest_dir, exist_ok=True)
+        safe = re.sub(r"[^A-Za-z0-9._-]+", "-", name).strip("-") or "paragon"
+        dest = os.path.join(dest_dir, f"{safe}_{ts}.pdf")
+        Image.open(src_image).convert("RGB").save(dest, "PDF", resolution=150.0)
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": str(exc)}
+    return {"ok": True, "storedPath": dest, "kind": "document-pdf", "live": False, "stored": True}
+
+
 def _tag(result: dict[str, Any], kind: str, *, live: bool = False) -> dict[str, Any]:
     """Stamp a result with the static-vs-live contract: `kind` (photo/scan/text/stream/…) and
     `live` (true = self-updating widget / live view; false = a frozen, immutable artifact). A
@@ -418,14 +443,66 @@ def _object_bbox(path: str, *, edge_threshold: int, pad: float, min_fraction: fl
     return det
 
 
+def _document_bbox_cv2(path: str, *, pad: float) -> dict[str, Any] | None:
+    """Robust receipt/sheet crop via OpenCV: threshold the brightest pixels, then pick the
+    connected component that is a SOLID rectangle (high fill-ratio) — that's the paper sheet,
+    not a bright but L-shaped/streaky distractor (tape, edge of a table). This handles the
+    hard case a brightness/edge heuristic fails on: a small receipt next to a big bright
+    object. Returns None (→ numpy fallback) when cv2 is absent or finds no solid sheet."""
+    try:
+        import cv2  # type: ignore
+        import numpy as np  # type: ignore
+        from PIL import Image, ImageOps  # type: ignore
+    except Exception:  # noqa: BLE001
+        return None
+    try:
+        img = ImageOps.exif_transpose(Image.open(path)).convert("L")
+        full_w, full_h = img.width, img.height
+        scale = max(1.0, full_w / 800.0)
+        arr = np.asarray(img.resize((max(1, int(full_w / scale)), max(1, int(full_h / scale)))),
+                         dtype=np.float32)
+    except Exception:  # noqa: BLE001
+        return None
+    total = arr.size
+    best = None  # (score, x, y, w, h)
+    for pct in (96, 94, 92, 90):
+        thr = float(np.percentile(arr, pct))
+        mask = (arr >= thr).astype("uint8")
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))   # drop specks
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((21, 21), np.uint8))  # fill text gaps
+        count, _labels, stats, _c = cv2.connectedComponentsWithStats(mask, 8)
+        for i in range(1, count):
+            x, y, bw, bh, area = (int(v) for v in stats[i])
+            box = bw * bh
+            if box < 0.008 * total or box > 0.6 * total or bw < 10 or bh < 10:
+                continue
+            fill = area / float(box)                       # solid rectangle (paper) → ~1.0
+            aspect = max(bw, bh) / max(1, min(bw, bh))      # receipts are portrait, not a thin strip
+            if fill > 0.55 and aspect < 6:
+                score = fill * area
+                if best is None or score > best[0]:
+                    best = (score, x, y, bw, bh)
+    if best is None:
+        return None
+    _s, x, y, bw, bh = best
+    X, Y, BW, BH = int(x * scale), int(y * scale), int(bw * scale), int(bh * scale)
+    px, py = int(BW * pad), int(BH * pad)
+    x0, y0 = max(0, X - px), max(0, Y - py)
+    x1, y1 = min(full_w, X + BW + 2 * px), min(full_h, Y + BH + 2 * py)
+    coverage = ((x1 - x0) * (y1 - y0)) / float(full_w * full_h or 1)
+    return {"ok": True, "found": True, "bbox": [x0, y0, x1 - x0, y1 - y0],
+            "coverage": round(coverage, 4), "detector": "document-cv2"}
+
+
 def _document_bbox(path: str, *, pad: float = 0.02, content_ratio: float = 0.12) -> dict[str, Any]:
     """Detect a sheet/receipt ('paragon') and return a tight crop box around it.
 
-    A receipt is a bright, text-dense rectangle on a darker, plainer background. We combine
-    two cues that survive a phone snapshot: brightness (the paper) and edge density (the
-    print), then keep the rows/columns whose combined content rises above `content_ratio` of
-    the peak. Projection trimming ignores stray specks, so the box hugs the document instead
-    of the whole frame. numpy-based; falls back to the edge bbox when numpy is unavailable."""
+    Prefers an OpenCV fill-ratio detector (picks the solid bright rectangle = paper, robust to
+    bright distractors like tape/table edges). Falls back to a numpy brightness+edge projection,
+    and to the Pillow edge bbox when numpy is unavailable."""
+    cv = _document_bbox_cv2(path, pad=pad)
+    if cv is not None:
+        return cv
     try:
         import numpy as np  # type: ignore
         from PIL import Image, ImageOps  # type: ignore

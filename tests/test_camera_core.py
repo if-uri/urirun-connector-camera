@@ -229,7 +229,7 @@ def test_target_document_used_by_analyze(tmp_path):
     _make_receipt(p)
     r = c.analyze(image=p, output_dir=str(tmp_path / "out"), target="document", ocr=False, describe=False)
     assert r["ok"] and r["object"]["found"]
-    assert r["object"]["detector"] == "document" and r["object"]["target"] == "document"
+    assert r["object"]["detector"].startswith("document") and r["object"]["target"] == "document"
     assert os.path.isfile(r["object"]["cropPath"])
 
 
@@ -476,3 +476,28 @@ def test_ledger_records_are_marked_static(tmp_path, monkeypatch):
     c.receipt_parse(text="SUMA PLN 1,00")
     rec = json.loads([l for l in open(led) if l.strip()][0])
     assert rec["live"] is False
+
+
+def test_document_crop_ignores_bright_L_distractor(tmp_path):
+    """The QUO CAFE failure mode: a small solid receipt next to a big bright L-shaped
+    distractor (duct tape). The fill-ratio detector must pick the receipt, not the L."""
+    pytest.importorskip("cv2")
+    import numpy as np
+    img = Image.new("RGB", (1000, 1400), (70, 75, 72))         # dark desk
+    d = ImageDraw.Draw(img)
+    # bright L-shaped tape (NOT a solid rectangle → low fill-ratio)
+    d.rectangle([120, 80, 260, 900], fill=(195, 195, 190))     # vertical strip
+    d.rectangle([120, 80, 760, 220], fill=(195, 195, 190))     # horizontal strip
+    # the actual receipt: a solid WHITE rectangle with text, lower-centre
+    d.rectangle([360, 980, 720, 1330], fill=(252, 252, 250))
+    for yy in range(1010, 1300, 26):
+        d.text((375, yy), "POZYCJA 12,99 PLN", fill=(15, 15, 15))
+    p = str(tmp_path / "receipt_tape.png")
+    img.save(p)
+    det = c._document_bbox(p, pad=0.03)
+    assert det["found"]
+    x, y, w, h = det["bbox"]
+    cx, cy = x + w / 2, y + h / 2
+    # the crop centre must land on the receipt (≈540,1155), NOT the tape L (≈190,490)
+    assert 330 <= cx <= 740 and 950 <= cy <= 1360, f"crop centred on {cx},{cy} (distractor?)"
+    assert w < 600 and h < 600                                  # tight to the receipt, not whole frame
