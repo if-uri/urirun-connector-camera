@@ -114,6 +114,79 @@ def _b64_file(path: str, max_bytes: int) -> tuple[str, int]:
         return base64.b64encode(fh.read()).decode("ascii"), size
 
 
+def _beep_run_repeated(argv: list, repeat: int, interval: int) -> tuple[bool, str]:
+    """Run a player command `repeat` times with optional inter-beep pause.
+    Returns (ok, last_stderr_on_failure)."""
+    last_err = ""
+    for _ in range(repeat):
+        proc = subprocess.run(argv, capture_output=True, text=True, timeout=10, check=False)
+        if proc.returncode != 0:
+            return False, proc.stderr.strip()
+        if interval:
+            time.sleep(interval / 1000.0)
+    return True, last_err
+
+
+def _beep_try_beep_cmd(freq: int, duration: int, repeat: int, interval: int) -> "dict[str, Any] | None":
+    """Try the `beep` binary. Returns a result dict on success, None otherwise."""
+    if not shutil.which("beep"):
+        return None
+    argv = ["beep", "-f", str(freq), "-l", str(duration), "-r", str(repeat), "-d", str(interval)]
+    proc = subprocess.run(argv, capture_output=True, text=True, timeout=10, check=False)
+    if proc.returncode == 0:
+        return {"ok": True, "enabled": True, "backend": "beep",
+                "frequency": freq, "durationMs": duration, "count": repeat}
+    return None
+
+
+def _beep_try_play_cmd(freq: int, duration: int, repeat: int, interval: int) -> "tuple[dict[str, Any] | None, str]":
+    """Try the SoX `play` command. Returns (result_dict, last_error); result is None on failure."""
+    if not shutil.which("play"):
+        return None, "no beep/play command"
+    argv = ["play", "-q", "-n", "synth", str(duration / 1000.0), "sine", str(freq)]
+    ok, last_err = _beep_run_repeated(argv, repeat, interval)
+    if ok:
+        return ({"ok": True, "enabled": True, "backend": "play",
+                 "frequency": freq, "durationMs": duration, "count": repeat}, "")
+    return None, last_err or "play failed"
+
+
+def _beep_make_wav(freq: int, duration: int, tmp: str) -> str:
+    """Generate a short sine-wave WAV file inside `tmp`. Returns the file path."""
+    wav_path = os.path.join(tmp, "beep.wav")
+    rate = 44100
+    frames = int(rate * duration / 1000.0)
+    with wave.open(wav_path, "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(rate)
+        samples = bytearray()
+        for i in range(frames):
+            val = int(12000 * math.sin(2 * math.pi * freq * (i / rate)))
+            samples.extend(int(val).to_bytes(2, "little", signed=True))
+        wav.writeframes(bytes(samples))
+    return wav_path
+
+
+def _beep_try_wav_players(freq: int, duration: int, repeat: int, interval: int) -> "tuple[dict[str, Any] | None, str]":
+    """Generate a WAV and try paplay/aplay/ffplay in order.
+    Returns (result_dict, last_error); result is None when all players fail/are absent."""
+    last_error = ""
+    with tempfile.TemporaryDirectory(prefix="urirun-camera-beep-") as tmp:
+        wav_path = _beep_make_wav(freq, duration, tmp)
+        for player in ("paplay", "aplay", "ffplay"):
+            if not shutil.which(player):
+                continue
+            argv = ([player, wav_path] if player != "ffplay"
+                    else [player, "-nodisp", "-autoexit", "-loglevel", "quiet", wav_path])
+            ok, last_err = _beep_run_repeated(argv, repeat, interval)
+            if ok:
+                return ({"ok": True, "enabled": True, "backend": player,
+                         "frequency": freq, "durationMs": duration, "count": repeat}, "")
+            last_error = last_err or f"{player} failed"
+    return None, last_error
+
+
 def _audio_beep(
     enabled: bool,
     *,
@@ -130,64 +203,19 @@ def _audio_beep(
     repeat = max(1, min(int(count or 1), 8))
     interval = max(0, min(int(interval_ms or 80), 2000))
 
-    if shutil.which("beep"):
-        argv = ["beep", "-f", str(freq), "-l", str(duration), "-r", str(repeat), "-d", str(interval)]
-        proc = subprocess.run(argv, capture_output=True, text=True, timeout=10, check=False)
-        if proc.returncode == 0:
-            return {"ok": True, "enabled": True, "backend": "beep", "frequency": freq, "durationMs": duration, "count": repeat}
+    result = _beep_try_beep_cmd(freq, duration, repeat, interval)
+    if result:
+        return result
 
-    if shutil.which("play"):
-        argv = ["play", "-q", "-n", "synth", str(duration / 1000.0), "sine", str(freq)]
-        ok = True
-        last_err = ""
-        for _ in range(repeat):
-            proc = subprocess.run(argv, capture_output=True, text=True, timeout=10, check=False)
-            if proc.returncode != 0:
-                ok = False
-                last_err = proc.stderr.strip()
-                break
-            if interval:
-                time.sleep(interval / 1000.0)
-        if ok:
-            return {"ok": True, "enabled": True, "backend": "play", "frequency": freq, "durationMs": duration, "count": repeat}
-        if last_err:
-            last_error = last_err
-        else:
-            last_error = "play failed"
-    else:
-        last_error = "no beep/play command"
+    result, last_error = _beep_try_play_cmd(freq, duration, repeat, interval)
+    if result:
+        return result
 
-    # Generate a short WAV with stdlib and play it through common desktop audio tools.
-    with tempfile.TemporaryDirectory(prefix="urirun-camera-beep-") as tmp:
-        wav_path = os.path.join(tmp, "beep.wav")
-        rate = 44100
-        frames = int(rate * duration / 1000.0)
-        with wave.open(wav_path, "wb") as wav:
-            wav.setnchannels(1)
-            wav.setsampwidth(2)
-            wav.setframerate(rate)
-            samples = bytearray()
-            for i in range(frames):
-                val = int(12000 * math.sin(2 * math.pi * freq * (i / rate)))
-                samples.extend(int(val).to_bytes(2, "little", signed=True))
-            wav.writeframes(bytes(samples))
-        for player in ("paplay", "aplay", "ffplay"):
-            if not shutil.which(player):
-                continue
-            argv = [player, wav_path] if player != "ffplay" else [player, "-nodisp", "-autoexit", "-loglevel", "quiet", wav_path]
-            ok = True
-            last_err = ""
-            for _ in range(repeat):
-                proc = subprocess.run(argv, capture_output=True, text=True, timeout=10, check=False)
-                if proc.returncode != 0:
-                    ok = False
-                    last_err = proc.stderr.strip()
-                    break
-                if interval:
-                    time.sleep(interval / 1000.0)
-            if ok:
-                return {"ok": True, "enabled": True, "backend": player, "frequency": freq, "durationMs": duration, "count": repeat}
-            last_error = last_err or f"{player} failed"
+    result, err = _beep_try_wav_players(freq, duration, repeat, interval)
+    if result:
+        return result
+    if err:
+        last_error = err
 
     try:
         print("\a", end="", file=sys.stderr, flush=True)
@@ -935,6 +963,39 @@ def capture(device: str = "", output: str = "", backend: str = "auto", warmup: i
     return _tag(urirun.ok(connector=CONNECTOR_ID, **payload), "photo")
 
 
+def _analyze_obtain_photo(
+    image: str, device: str, out_dir: str, backend: str, warmup: int,
+    width: int, height: int, timeout: int, beep: bool, beep_required: bool,
+    beep_frequency: int, beep_duration_ms: int, beep_count: int,
+) -> "tuple[str, str, dict[str, Any], dict[str, Any] | None]":
+    """Obtain the photo path for analysis by reusing an existing file or capturing one.
+
+    Returns (photo_path, device_used, beep_result, error_dict_or_None).
+    When error_dict is not None the caller must return it immediately."""
+    if image:
+        photo = os.path.expanduser(image)
+        if not os.path.isfile(photo):
+            return "", "", {}, urirun.fail(f"image not found: {photo}", connector=CONNECTOR_ID)
+        return photo, "", {"ok": True, "enabled": False, "reason": "existing image supplied"}, None
+    device_used = _device_path(device) or _default_device()
+    if not device_used:
+        return "", "", {}, urirun.fail("no camera device found (no /dev/video*)", connector=CONNECTOR_ID)
+    beep_result = _audio_beep(beep, frequency=beep_frequency, duration_ms=beep_duration_ms, count=beep_count)
+    if beep_required and not beep_result.get("ok"):
+        return "", device_used, beep_result, urirun.fail(
+            str(beep_result.get("error", "pre-scan beep failed")),
+            connector=CONNECTOR_ID, device=device_used, beep=beep_result)
+    photo = os.path.join(out_dir, "photo.jpg")
+    cap = _capture(device_used, photo, backend=backend, warmup=warmup, width=width,
+                   height=height, timeout=timeout)
+    if not cap.get("ok"):
+        return "", device_used, beep_result, urirun.fail(
+            str(cap.get("error", "capture failed")),
+            connector=CONNECTOR_ID, device=device_used, backend=cap.get("backend"),
+            attempts=cap.get("attempts", []))
+    return photo, device_used, beep_result, None
+
+
 @CAMERA.handler("photo/query/analyze", isolated=True,
                 meta={"label": "Capture, crop to the main object, and OCR it", "cliAlias": "analyze"})
 def analyze(device: str = "", image: str = "", output_dir: str = "", backend: str = "auto",
@@ -958,27 +1019,11 @@ def analyze(device: str = "", image: str = "", output_dir: str = "", backend: st
     os.makedirs(out_dir, exist_ok=True)
 
     # 1. obtain a frame (capture or reuse a provided image)
-    if image:
-        photo = os.path.expanduser(image)
-        if not os.path.isfile(photo):
-            return urirun.fail(f"image not found: {photo}", connector=CONNECTOR_ID)
-        device_used = ""
-        beep_result = {"ok": True, "enabled": False, "reason": "existing image supplied"}
-    else:
-        device_used = _device_path(device) or _default_device()
-        if not device_used:
-            return urirun.fail("no camera device found (no /dev/video*)", connector=CONNECTOR_ID)
-        beep_result = _audio_beep(beep, frequency=beep_frequency, duration_ms=beep_duration_ms, count=beep_count)
-        if beep_required and not beep_result.get("ok"):
-            return urirun.fail(str(beep_result.get("error", "pre-scan beep failed")),
-                               connector=CONNECTOR_ID, device=device_used, beep=beep_result)
-        photo = os.path.join(out_dir, "photo.jpg")
-        cap = _capture(device_used, photo, backend=backend, warmup=warmup, width=width,
-                       height=height, timeout=timeout)
-        if not cap.get("ok"):
-            return urirun.fail(str(cap.get("error", "capture failed")),
-                               connector=CONNECTOR_ID, device=device_used, backend=cap.get("backend"),
-                               attempts=cap.get("attempts", []))
+    photo, device_used, beep_result, err = _analyze_obtain_photo(
+        image, device, out_dir, backend, warmup, width, height, timeout,
+        beep, beep_required, beep_frequency, beep_duration_ms, beep_count)
+    if err is not None:
+        return err
 
     w, h = _image_size(photo)
     report: dict[str, Any] = {
@@ -1107,6 +1152,74 @@ def _contains(text: str, needle: str) -> bool:
     return needle.lower() in text.lower() if needle else True
 
 
+def _inspect_build_alerts(
+    res: dict[str, Any],
+    required_text: str,
+    forbidden_text: str,
+    min_chars: int,
+    require_object: bool,
+    brightness_min: float,
+    brightness_max: float,
+) -> "tuple[list[dict[str, Any]], str, Any]":
+    """Evaluate inspection rules against an analysis result.
+
+    Returns (alerts, ocr_text, brightness) — all three are needed by the caller."""
+    ocr_text = str((res.get("ocr") or {}).get("text") or "")
+    alerts: list[dict[str, Any]] = []
+    if required_text and not _contains(ocr_text, required_text):
+        alerts.append({"code": "TEXT_MISSING", "message": f"required text not found: {required_text}"})
+    if forbidden_text and _contains(ocr_text, forbidden_text):
+        alerts.append({"code": "FORBIDDEN_TEXT", "message": f"forbidden text found: {forbidden_text}"})
+    if int(min_chars) > 0 and len(ocr_text.strip()) < int(min_chars):
+        alerts.append({"code": "LOW_TEXT", "message": f"OCR text shorter than {min_chars} chars",
+                       "chars": len(ocr_text.strip())})
+    if require_object and not bool((res.get("object") or {}).get("found")):
+        alerts.append({"code": "OBJECT_MISSING", "message": "dominant object was not detected"})
+    basic = _describe_basic((res.get("photo") or {}).get("path", ""))
+    brightness = basic.get("brightness")
+    if isinstance(brightness, (int, float)):
+        if brightness_min >= 0 and brightness < brightness_min:
+            alerts.append({"code": "TOO_DARK",
+                           "message": f"brightness {brightness} < {brightness_min}",
+                           "brightness": brightness})
+        if brightness_max >= 0 and brightness > brightness_max:
+            alerts.append({"code": "TOO_BRIGHT",
+                           "message": f"brightness {brightness} > {brightness_max}",
+                           "brightness": brightness})
+    return alerts, ocr_text, brightness
+
+
+def _inspect_log_results(
+    inspection: dict[str, Any],
+    payload: dict[str, Any],
+    alerts: "list[dict[str, Any]]",
+    brightness: Any,
+    res: dict[str, Any],
+    out_dir: str,
+    audit_log: str,
+) -> None:
+    """Persist the inspection verdict (sidecar JSON + optional JSONL audit log + ledger).
+
+    Mutates `inspection` in place to record the sidecar/audit paths."""
+    if out_dir:
+        try:
+            inspection["sidecar"] = _write_sidecar(out_dir, {"inspection": inspection, **payload})
+        except OSError as exc:
+            inspection["sidecarError"] = str(exc)
+    if audit_log:
+        record = {"timestamp": inspection["timestamp"], "passed": inspection["passed"],
+                  "alerts": [a["code"] for a in alerts], "textChars": inspection["textChars"],
+                  "brightness": brightness, "device": res.get("device", ""),
+                  "photo": (res.get("photo") or {}).get("path", "")}
+        try:
+            inspection["auditLog"] = _append_jsonl(audit_log, record)
+        except OSError as exc:
+            inspection["auditLogError"] = str(exc)
+    _ledger("inspect", passed=inspection["passed"], alerts=[a["code"] for a in alerts],
+            textChars=inspection["textChars"], device=res.get("device", ""),
+            photo=(res.get("photo") or {}).get("path", ""))
+
+
 @CAMERA.handler("photo/query/inspect", isolated=True,
                 meta={"label": "Capture and inspect a photo with optional alert", "cliAlias": "inspect"})
 def inspect_photo(
@@ -1160,25 +1273,8 @@ def inspect_photo(
     if not res.get("ok"):
         return res
 
-    alerts: list[dict[str, Any]] = []
-    text = str((res.get("ocr") or {}).get("text") or "")
-    if required_text and not _contains(text, required_text):
-        alerts.append({"code": "TEXT_MISSING", "message": f"required text not found: {required_text}"})
-    if forbidden_text and _contains(text, forbidden_text):
-        alerts.append({"code": "FORBIDDEN_TEXT", "message": f"forbidden text found: {forbidden_text}"})
-    if int(min_chars) > 0 and len(text.strip()) < int(min_chars):
-        alerts.append({"code": "LOW_TEXT", "message": f"OCR text shorter than {min_chars} chars", "chars": len(text.strip())})
-    if require_object and not bool((res.get("object") or {}).get("found")):
-        alerts.append({"code": "OBJECT_MISSING", "message": "dominant object was not detected"})
-
-    basic = _describe_basic((res.get("photo") or {}).get("path", ""))
-    brightness = basic.get("brightness")
-    if isinstance(brightness, (int, float)):
-        if brightness_min >= 0 and brightness < brightness_min:
-            alerts.append({"code": "TOO_DARK", "message": f"brightness {brightness} < {brightness_min}", "brightness": brightness})
-        if brightness_max >= 0 and brightness > brightness_max:
-            alerts.append({"code": "TOO_BRIGHT", "message": f"brightness {brightness} > {brightness_max}", "brightness": brightness})
-
+    alerts, text, brightness = _inspect_build_alerts(
+        res, required_text, forbidden_text, min_chars, require_object, brightness_min, brightness_max)
     alert_beep = _audio_beep(bool(beep_on_alert and alerts), frequency=alert_beep_frequency,
                              duration_ms=220, count=2)
     inspection = {
@@ -1192,28 +1288,8 @@ def inspect_photo(
         "timestamp": time.time(),
     }
     payload = {k: v for k, v in res.items() if k not in ("ok", "connector")}
-
-    # Persist the verdict so alerting/inspection has a durable trail without needing a
-    # separate log connector: a JSON sidecar next to the photo and an optional JSONL log.
-    out_dir = res.get("outputDir", "")
-    if out_dir:
-        try:
-            inspection["sidecar"] = _write_sidecar(out_dir, {"inspection": inspection, **payload})
-        except OSError as exc:
-            inspection["sidecarError"] = str(exc)
-    if audit_log:
-        record = {"timestamp": inspection["timestamp"], "passed": inspection["passed"],
-                  "alerts": [a["code"] for a in alerts], "textChars": inspection["textChars"],
-                  "brightness": brightness, "device": res.get("device", ""),
-                  "photo": (res.get("photo") or {}).get("path", "")}
-        try:
-            inspection["auditLog"] = _append_jsonl(audit_log, record)
-        except OSError as exc:
-            inspection["auditLogError"] = str(exc)
-
-    _ledger("inspect", passed=inspection["passed"], alerts=[a["code"] for a in alerts],
-            textChars=inspection["textChars"], device=res.get("device", ""),
-            photo=(res.get("photo") or {}).get("path", ""))
+    _inspect_log_results(inspection, payload, alerts, brightness, res,
+                         out_dir=res.get("outputDir", ""), audit_log=audit_log)
     if alerts and fail_on_alert:
         return urirun.fail("inspection failed", connector=CONNECTOR_ID, inspection=inspection, **payload)
     return _tag(urirun.ok(connector=CONNECTOR_ID, inspection=inspection, **payload), "inspection")
@@ -1372,6 +1448,37 @@ def _decode_b64_to_file(bytes_b64: str, out_dir: str, filename: str,
     return path, len(raw)
 
 
+def _ingest_dispatch(
+    act: str, photo: str, out_dir: str, crop: bool, target: str, deskew: bool,
+    required_text: str, forbidden_text: str, min_chars: int, require_object: bool,
+    required: str, fail_if_missing: bool, lang: str, max_chars: int,
+    audit_log: str, timeout: int, action: str,
+) -> "dict[str, Any] | None":
+    """Route an ingest action to the appropriate camera pipeline function.
+
+    Returns the result dict, or None for unknown actions (caller must return an error)."""
+    if act == "analyze":
+        return analyze(image=photo, output_dir=out_dir, crop=crop, target=target, deskew=deskew,
+                       ocr=True, describe=True, lang=lang, max_chars=max_chars, timeout=timeout)
+    if act == "inspect":
+        return inspect_photo(image=photo, output_dir=out_dir, crop=crop, target=target, deskew=deskew,
+                             lang=lang, required_text=required_text, forbidden_text=forbidden_text,
+                             min_chars=min_chars, require_object=require_object,
+                             beep=False, audit_log=audit_log, timeout=timeout)
+    if act == "barcodes":
+        return read_barcodes(image=photo, output_dir=out_dir, required=required,
+                             fail_if_missing=fail_if_missing)
+    if act == "describe":
+        return describe_photo(image=photo, output_dir=out_dir)
+    if act == "ocr":
+        return photo_ocr(image=photo, crop=crop, target=target, deskew=deskew, lang=lang,
+                         max_chars=max_chars, timeout=timeout)
+    if act in ("receipt", "parse"):
+        return receipt_parse(image=photo, output_dir=out_dir, target=target, deskew=deskew,
+                             lang=lang, max_chars=max_chars, timeout=timeout)
+    return None
+
+
 @CAMERA.handler("upload/command/ingest", isolated=True,
                 meta={"label": "Process a browser/mobile-uploaded frame", "cliAlias": "ingest"})
 def ingest(bytes_b64: str = "", filename: str = "photo.jpg", action: str = "analyze",
@@ -1397,26 +1504,10 @@ def ingest(bytes_b64: str = "", filename: str = "photo.jpg", action: str = "anal
         return urirun.fail(str(exc), connector=CONNECTOR_ID)
 
     act = (action or "analyze").strip().lower()
-    if act == "analyze":
-        res = analyze(image=photo, output_dir=out_dir, crop=crop, target=target, deskew=deskew,
-                      ocr=True, describe=True, lang=lang, max_chars=max_chars, timeout=timeout)
-    elif act == "inspect":
-        res = inspect_photo(image=photo, output_dir=out_dir, crop=crop, target=target, deskew=deskew,
-                            lang=lang, required_text=required_text, forbidden_text=forbidden_text,
-                            min_chars=min_chars, require_object=require_object,
-                            beep=False, audit_log=audit_log, timeout=timeout)
-    elif act == "barcodes":
-        res = read_barcodes(image=photo, output_dir=out_dir, required=required,
-                            fail_if_missing=fail_if_missing)
-    elif act == "describe":
-        res = describe_photo(image=photo, output_dir=out_dir)
-    elif act == "ocr":
-        res = photo_ocr(image=photo, crop=crop, target=target, deskew=deskew, lang=lang,
-                        max_chars=max_chars, timeout=timeout)
-    elif act in ("receipt", "parse"):
-        res = receipt_parse(image=photo, output_dir=out_dir, target=target, deskew=deskew,
-                            lang=lang, max_chars=max_chars, timeout=timeout)
-    else:
+    res = _ingest_dispatch(act, photo, out_dir, crop, target, deskew,
+                           required_text, forbidden_text, min_chars, require_object,
+                           required, fail_if_missing, lang, max_chars, audit_log, timeout, action)
+    if res is None:
         return urirun.fail(f"unknown action: {action} (use analyze|inspect|barcodes|describe|ocr|receipt)",
                            connector=CONNECTOR_ID)
 
