@@ -11,63 +11,63 @@
       "version": "v1", "effect": "command", "reversible": false,
       "inp": { "device": "?str", "output": "?str", "backend": "?str", "warmup": "?int", "width": "?int", "height": "?int", "return_base64": "?bool" },
       "out": { "connector": "const:camera", "kind": "str", "live": "bool" },
-      "errors": ["device-not-found", "capture-failed"],
+      "errors": ["precondition-unmet", "degraded-backend"],
       "examples": [{ "payload": {}, "result": { "ok": true, "connector": "camera", "kind": "photo", "live": false } }]
     },
     "photo/query/analyze": {
       "version": "v1", "effect": "query", "reversible": false,
       "inp": { "device": "?str", "image": "?str", "output_dir": "?str", "backend": "?str" },
       "out": { "connector": "const:camera", "kind": "str", "live": "bool" },
-      "errors": ["device-not-found", "capture-failed"],
+      "errors": ["precondition-unmet", "degraded-backend"],
       "examples": [{ "payload": { "image": "/tmp/p.jpg" }, "result": { "ok": true, "connector": "camera", "kind": "scan", "live": false } }]
     },
     "photo/query/describe": {
       "version": "v1", "effect": "query", "reversible": false,
       "inp": { "device": "?str", "image": "?str", "backend": "?str", "warmup": "?int" },
       "out": { "connector": "const:camera", "kind": "str", "live": "bool" },
-      "errors": ["device-not-found", "capture-failed"],
+      "errors": ["precondition-unmet", "degraded-backend"],
       "examples": [{ "payload": { "image": "/tmp/p.jpg" }, "result": { "ok": true, "connector": "camera", "kind": "photo", "live": false } }]
     },
     "photo/query/ocr": {
       "version": "v1", "effect": "query", "reversible": false,
       "inp": { "device": "?str", "image": "?str", "backend": "?str", "warmup": "?int" },
       "out": { "connector": "const:camera", "kind": "str", "live": "bool" },
-      "errors": ["device-not-found", "capture-failed", "dependency-missing"],
+      "errors": ["precondition-unmet", "degraded-backend"],
       "examples": [{ "payload": { "image": "/tmp/p.jpg" }, "result": { "ok": true, "connector": "camera", "kind": "text", "live": false } }]
     },
     "photo/query/inspect": {
       "version": "v1", "effect": "query", "reversible": false,
       "inp": { "device": "?str", "image": "?str", "backend": "?str" },
       "out": { "connector": "const:camera", "kind": "str", "live": "bool", "inspection": "obj" },
-      "errors": ["device-not-found", "capture-failed"],
+      "errors": ["precondition-unmet", "degraded-backend"],
       "examples": [{ "payload": { "image": "/tmp/p.jpg" }, "result": { "ok": true, "connector": "camera", "kind": "inspection", "live": false, "inspection": {} } }]
     },
     "photo/query/compare": {
       "version": "v1", "effect": "query", "reversible": false,
       "inp": { "device": "?str", "reference": "?str", "image": "?str", "output_dir": "?str" },
       "out": { "connector": "const:camera", "kind": "str", "live": "bool" },
-      "errors": ["device-not-found", "capture-failed"],
+      "errors": ["precondition-unmet", "degraded-backend"],
       "examples": [{ "payload": { "reference": "/tmp/a.jpg", "image": "/tmp/b.jpg" }, "result": { "ok": true, "connector": "camera", "kind": "comparison", "live": false } }]
     },
     "photo/query/barcodes": {
       "version": "v1", "effect": "query", "reversible": false,
       "inp": { "device": "?str", "image": "?str", "output_dir": "?str", "backend": "?str" },
       "out": { "connector": "const:camera", "kind": "str", "live": "bool" },
-      "errors": ["device-not-found", "capture-failed", "dependency-missing"],
+      "errors": ["precondition-unmet", "degraded-backend"],
       "examples": [{ "payload": { "image": "/tmp/p.jpg" }, "result": { "ok": true, "connector": "camera", "kind": "barcodes", "live": false } }]
     },
     "upload/command/ingest": {
       "version": "v1", "effect": "command", "reversible": false,
       "inp": { "bytes_b64": "?str", "filename": "?str", "action": "?str" },
       "out": { "connector": "const:camera", "kind": "str", "live": "bool" },
-      "errors": ["invalid-argument"],
+      "errors": ["precondition-unmet"],
       "examples": [{ "payload": { "bytes_b64": "aGVsbG8=", "action": "analyze" }, "result": { "ok": true, "connector": "camera", "kind": "scan", "live": false } }]
     },
     "receipt/query/parse": {
       "version": "v1", "effect": "query", "reversible": false,
       "inp": { "device": "?str", "image": "?str", "bytes_b64": "?str", "text": "?str" },
       "out": { "connector": "const:camera", "kind": "str", "live": "bool", "source": "str" },
-      "errors": ["invalid-argument", "capture-failed"],
+      "errors": ["precondition-unmet", "degraded-backend"],
       "examples": [{ "payload": { "text": "TOTAL 12.00" }, "result": { "ok": true, "connector": "camera", "kind": "receipt", "live": false, "source": "text" } }]
     }
   },

@@ -658,6 +658,44 @@ def _block_reduce(mask, factor: int):
     return reduced > 0.5, factor
 
 
+def _largest_mask_component(mask):
+    """Keep the largest 4-connected component in a boolean mask.
+
+    Deskew corner extraction uses sum/diff extremes. Without this cleanup a tiny bright
+    reflection far from the page can steal a corner even after block reduction.
+    """
+    import numpy as np  # type: ignore
+
+    h, w = mask.shape
+    seen = np.zeros(mask.shape, dtype=bool)
+    best: list[tuple[int, int]] = []
+    starts = np.argwhere(mask)
+    for sy, sx in starts:
+        y = int(sy)
+        x = int(sx)
+        if seen[y, x]:
+            continue
+        stack = [(y, x)]
+        seen[y, x] = True
+        component: list[tuple[int, int]] = []
+        while stack:
+            cy, cx = stack.pop()
+            component.append((cy, cx))
+            for ny, nx in ((cy - 1, cx), (cy + 1, cx), (cy, cx - 1), (cy, cx + 1)):
+                if 0 <= ny < h and 0 <= nx < w and mask[ny, nx] and not seen[ny, nx]:
+                    seen[ny, nx] = True
+                    stack.append((ny, nx))
+        if len(component) > len(best):
+            best = component
+
+    if not best:
+        return mask
+    cleaned = np.zeros(mask.shape, dtype=bool)
+    ys, xs = zip(*best)
+    cleaned[list(ys), list(xs)] = True
+    return cleaned
+
+
 def _quad_numpy(gray, min_area_ratio: float):
     """Document quad from the bright-sheet mask via the sum/diff corner-extremes trick.
     The mask is speckle-cleaned by block-reduction first, so isolated bright spots in the
@@ -674,6 +712,9 @@ def _quad_numpy(gray, min_area_ratio: float):
     clean, factor = _block_reduce(mask, factor)
     if clean.sum() < 0.03 * clean.size:        # cleanup removed everything → fall back raw
         clean, factor = mask, 1
+    clean_component = _largest_mask_component(clean)
+    if clean_component.sum() >= 0.03 * clean.size:
+        clean = clean_component
 
     coords = np.argwhere(clean)                 # rows of (y, x) in reduced space
     ys = coords[:, 0].astype(np.float64) * factor
