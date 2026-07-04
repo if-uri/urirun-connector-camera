@@ -1,0 +1,12 @@
+# local.dev.txt — locally developed dependencies of this project (generated 2026-07-04)
+# by ~/github/local.dev.sh — DO NOT EDIT; see ~/github/local.dev.md
+# project: urirun-connector-camera 0.1.1 (python) at /home/tom/github/if-uri/urirun-connector-camera
+# deps declared: 9 | with local source: 4
+
+## LOCAL DEPS  (dep | required | local source (version) | installed | status)
+img2nl | >=0.1.8 | /home/tom/github/wronai/img2nl (0.1.8) | 0.1.8 editable | OK-EDITABLE  [pyproject.toml[vision]]
+imgl | >=0.7 | /home/tom/github/semcod/imgl (0.7.14) | 0.7.14 editable | OK-EDITABLE  [pyproject.toml[vision]]
+urirun | >=0.4.14 | /home/tom/github/if-uri/urirun/adapters/python (0.4.190) | 0.4.190 editable | OK-EDITABLE  [pyproject.toml]
+urirun-connector-ocr | * | /home/tom/github/if-uri/urirun-connector-ocr (0.1.1) | 0.1.0 editable | OK-EDITABLE  [pyproject.toml[scene]]
+
+## EXTERNAL DEPS (no local source, 5): opencv-python, pillow, pytest, pyzbar, qrcode
