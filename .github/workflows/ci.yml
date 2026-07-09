@@ -1,7 +1,91 @@
 name: ci
-on: [push, pull_request]
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
 jobs:
-  ci:
-    uses: if-uri/urirun/.github/workflows/connector-ci.yml@main
-    with:
-      lang: python
+  connector-ci:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout urirun-connector-camera
+        uses: actions/checkout@v4
+        with:
+          path: urirun-connector-camera
+
+      - name: Checkout urirun
+        uses: actions/checkout@v4
+        with:
+          repository: if-uri/urirun
+          path: _deps/urirun
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install urirun and current connector from source
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e "./_deps/urirun/adapters/python"
+          python -m pip install -e "./urirun-connector-camera[test]"
+
+      - name: Verify connector import and safe bindings
+        working-directory: urirun-connector-camera
+        run: |
+          python - <<'PY'
+          import json
+
+          from urirun_connector_camera.core import urirun_bindings
+
+          bindings = urirun_bindings()
+          text = json.dumps(bindings)
+          assert "camera://host/doctor/query/report" in text, "safe doctor route missing from bindings"
+
+          forbidden = ['kvm://', 'fs://', 'pdf://', 'browser://', 'http-check://', 'httpcheck://', 'router://', 'mqtt://', 'github://', 'ocr://', 'usb://', 'adb://', 'node://', 'email://', 'calendar://', 'doc://', 'docid://', 'document://', 'flow://', 'invoice://', 'koru://', 'ksef://', 'linkedin://', 'llm://', 'dns://', 'netscan://', 'task://', 'sheet://', 'smartcrop://', 'data://', 'artifact://', 'check://', 'log://', 'time://', 'twin://', 'urifix://', 'urivision://', 'runtime://', 'vdisplay://', 'view://', 'vql://', 'webnode://', 'youtube://', 'agent://', 'connector://', 'adopt://', 'monitor://', 'device://', 'webcam://']
+          for marker in forbidden:
+              assert marker not in text, f"Unexpected non-current connector route found: {marker}"
+
+          print("Connector import and isolated bindings OK")
+          PY
+
+      - name: Build isolated registry and run safe doctor route
+        run: |
+          mkdir -p .urirun
+
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          from urirun_connector_camera.core import urirun_bindings
+
+          bindings = urirun_bindings()
+          text = json.dumps(bindings)
+          assert "camera://host/doctor/query/report" in text, "safe doctor route missing"
+          Path(".urirun/camera.bindings.v2.json").write_text(
+              json.dumps(bindings, indent=2, sort_keys=True),
+              encoding="utf-8",
+          )
+          PY
+
+          urirun compile .urirun/camera.bindings.v2.json --out .urirun/camera.registry.json
+
+          urirun run             'camera://host/doctor/query/report'             .urirun/camera.registry.json             --execute             --allow 'camera://**'             | tee run-response.json
+
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          response = json.loads(Path("run-response.json").read_text(encoding="utf-8"))
+          result = response.get("result")
+          value = result.get("value", result) if isinstance(result, dict) else result
+          assert response.get("ok") is True, response
+          assert isinstance(value, dict), response
+          assert value.get("ok") is True, response
+          assert value.get("status") == "ready", response
+          print("Safe doctor route through urirun run OK")
+          PY
