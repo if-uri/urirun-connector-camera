@@ -471,6 +471,33 @@ def _object_bbox(path: str, *, edge_threshold: int, pad: float, min_fraction: fl
     return det
 
 
+def _document_cv2_best_component(arr: Any) -> "tuple[float, int, int, int, int] | None":
+    """Scan percentile brightness thresholds; return the best (score,x,y,w,h) solid component."""
+    import cv2  # type: ignore
+    import numpy as np  # type: ignore
+
+    total = arr.size
+    best = None  # (score, x, y, w, h)
+    for pct in (96, 94, 92, 90):
+        thr = float(np.percentile(arr, pct))
+        mask = (arr >= thr).astype("uint8")
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))   # drop specks
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((21, 21), np.uint8))  # fill text gaps
+        count, _labels, stats, _c = cv2.connectedComponentsWithStats(mask, 8)
+        for i in range(1, count):
+            x, y, bw, bh, area = (int(v) for v in stats[i])
+            box = bw * bh
+            if box < 0.008 * total or box > 0.6 * total or bw < 10 or bh < 10:
+                continue
+            fill = area / float(box)                       # solid rectangle (paper) → ~1.0
+            aspect = max(bw, bh) / max(1, min(bw, bh))      # receipts are portrait, not a thin strip
+            if fill > 0.55 and aspect < 6:
+                score = fill * area
+                if best is None or score > best[0]:
+                    best = (score, x, y, bw, bh)
+    return best
+
+
 def _document_bbox_cv2(path: str, *, pad: float) -> dict[str, Any] | None:
     """Robust receipt/sheet crop via OpenCV: threshold the brightest pixels, then pick the
     connected component that is a SOLID rectangle (high fill-ratio) — that's the paper sheet,
@@ -491,25 +518,7 @@ def _document_bbox_cv2(path: str, *, pad: float) -> dict[str, Any] | None:
                          dtype=np.float32)
     except Exception:  # noqa: BLE001
         return None
-    total = arr.size
-    best = None  # (score, x, y, w, h)
-    for pct in (96, 94, 92, 90):
-        thr = float(np.percentile(arr, pct))
-        mask = (arr >= thr).astype("uint8")
-        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))   # drop specks
-        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((21, 21), np.uint8))  # fill text gaps
-        count, _labels, stats, _c = cv2.connectedComponentsWithStats(mask, 8)
-        for i in range(1, count):
-            x, y, bw, bh, area = (int(v) for v in stats[i])
-            box = bw * bh
-            if box < 0.008 * total or box > 0.6 * total or bw < 10 or bh < 10:
-                continue
-            fill = area / float(box)                       # solid rectangle (paper) → ~1.0
-            aspect = max(bw, bh) / max(1, min(bw, bh))      # receipts are portrait, not a thin strip
-            if fill > 0.55 and aspect < 6:
-                score = fill * area
-                if best is None or score > best[0]:
-                    best = (score, x, y, bw, bh)
+    best = _document_cv2_best_component(arr)
     if best is None:
         return None
     _s, x, y, bw, bh = best
@@ -811,48 +820,70 @@ def analyze(device: str = "", image: str = "", output_dir: str = "", backend: st
     #    (flatten a receipt/document shot at an angle); otherwise an axis-aligned crop.
     ocr_target = photo
     if crop:
-        deskewed = False
-        if deskew:
-            dsk = _deskew_document(photo, os.path.join(out_dir, "document.jpg"))
-            if dsk.get("ok") and dsk.get("found"):
-                report["object"] = {"found": True, "detector": dsk["detector"], "target": target,
-                                    "corners": dsk["corners"], "size": dsk["size"],
-                                    "cropPath": dsk["path"], "deskewed": True}
-                ocr_target = dsk["path"]
-                deskewed = True
-            elif not dsk.get("ok"):
-                report["deskewError"] = dsk.get("error")
-        if not deskewed:
-            det = _target_bbox(photo, target, edge_threshold=edge_threshold, pad=pad, min_fraction=min_fraction)
-            if det.get("ok"):
-                obj: dict[str, Any] = {"found": det.get("found"), "bbox": det.get("bbox"),
-                                       "coverage": det.get("coverage"), "detector": det.get("detector"),
-                                       "target": target}
-                if det.get("found") and det.get("bbox"):
-                    crop_path = os.path.join(out_dir, "object.jpg")
-                    cres = _crop(photo, det["bbox"], crop_path)
-                    if cres.get("ok"):
-                        obj["cropPath"] = crop_path
-                        ocr_target = crop_path
-                    else:
-                        obj["cropError"] = cres.get("error")
-                report["object"] = obj
-            else:
-                report["object"] = {"found": False, "error": det.get("error")}
+        deskewed_target = _analyze_deskew_step(photo, out_dir, report, target) if deskew else None
+        cropped_target = deskewed_target or _analyze_bbox_crop_step(
+            photo, out_dir, report, target, edge_threshold, pad, min_fraction)
+        if cropped_target:
+            ocr_target = cropped_target
 
     # 4. OCR the crop (or the whole frame)
     if ocr:
-        ores = _ocr(ocr_target, lang, max_chars, psm, timeout, prefer_connector=True)
-        report["ocr"] = {"target": ocr_target, **{k: v for k, v in ores.items() if k != "connector"}}
-        text = str(ores.get("text", "")).strip()
-        report["contents"] = {
-            "hasText": bool(text),
-            "textPreview": text[:280],
-            "objectFound": bool(report.get("object", {}).get("found")),
-            "summary": str(report.get("description", {}).get("text", "")),
-        }
+        _analyze_ocr_step(ocr_target, report, lang, max_chars, psm, timeout)
 
     return _tag(urirun.ok(connector=CONNECTOR_ID, outputDir=out_dir, **report), "scan")
+
+
+def _analyze_deskew_step(photo: str, out_dir: str, report: dict[str, Any], target: str) -> "str | None":
+    """Try the 4-point perspective correction; return the deskewed crop path or None."""
+    dsk = _deskew_document(photo, os.path.join(out_dir, "document.jpg"))
+    if dsk.get("ok") and dsk.get("found"):
+        report["object"] = {"found": True, "detector": dsk["detector"], "target": target,
+                            "corners": dsk["corners"], "size": dsk["size"],
+                            "cropPath": dsk["path"], "deskewed": True}
+        return dsk["path"]
+    if not dsk.get("ok"):
+        report["deskewError"] = dsk.get("error")
+    return None
+
+
+def _analyze_bbox_crop_step(
+    photo: str, out_dir: str, report: dict[str, Any], target: str,
+    edge_threshold: int, pad: float, min_fraction: float,
+) -> "str | None":
+    """Axis-aligned crop to the detected target bbox; return the crop path or None."""
+    det = _target_bbox(photo, target, edge_threshold=edge_threshold, pad=pad, min_fraction=min_fraction)
+    if not det.get("ok"):
+        report["object"] = {"found": False, "error": det.get("error")}
+        return None
+    obj: dict[str, Any] = {"found": det.get("found"), "bbox": det.get("bbox"),
+                           "coverage": det.get("coverage"), "detector": det.get("detector"),
+                           "target": target}
+    crop_target: "str | None" = None
+    if det.get("found") and det.get("bbox"):
+        crop_path = os.path.join(out_dir, "object.jpg")
+        cres = _crop(photo, det["bbox"], crop_path)
+        if cres.get("ok"):
+            obj["cropPath"] = crop_path
+            crop_target = crop_path
+        else:
+            obj["cropError"] = cres.get("error")
+    report["object"] = obj
+    return crop_target
+
+
+def _analyze_ocr_step(
+    ocr_target: str, report: dict[str, Any], lang: str, max_chars: int, psm: int, timeout: int
+) -> None:
+    """OCR the crop (or whole frame) and record ocr + contents sections in the report."""
+    ores = _ocr(ocr_target, lang, max_chars, psm, timeout, prefer_connector=True)
+    report["ocr"] = {"target": ocr_target, **{k: v for k, v in ores.items() if k != "connector"}}
+    text = str(ores.get("text", "")).strip()
+    report["contents"] = {
+        "hasText": bool(text),
+        "textPreview": text[:280],
+        "objectFound": bool(report.get("object", {}).get("found")),
+        "summary": str(report.get("description", {}).get("text", "")),
+    }
 
 
 @CAMERA.handler("photo/query/describe", isolated=True,
@@ -867,27 +898,11 @@ def describe_photo(device: str = "", image: str = "", backend: str = "auto", war
     the img2nl engine when available, otherwise a basic Pillow summary."""
     out_dir = os.path.expanduser(output_dir) if output_dir else tempfile.mkdtemp(prefix="urirun-camera-")
     os.makedirs(out_dir, exist_ok=True)
-    if image:
-        photo = os.path.expanduser(image)
-        if not os.path.isfile(photo):
-            return urirun.fail(f"image not found: {photo}", connector=CONNECTOR_ID)
-        device_used = ""
-        beep_result = {"ok": True, "enabled": False, "reason": "existing image supplied"}
-    else:
-        device_used = _device_path(device) or _default_device()
-        if not device_used:
-            return urirun.fail("no camera device found (no /dev/video*)", connector=CONNECTOR_ID)
-        beep_result = _audio_beep(beep, frequency=beep_frequency, duration_ms=beep_duration_ms, count=beep_count)
-        if beep_required and not beep_result.get("ok"):
-            return urirun.fail(str(beep_result.get("error", "pre-scan beep failed")),
-                               connector=CONNECTOR_ID, device=device_used, beep=beep_result)
-        photo = os.path.join(out_dir, "photo.jpg")
-        cap = _capture(device_used, photo, backend=backend, warmup=warmup, width=width,
-                       height=height, timeout=timeout)
-        if not cap.get("ok"):
-            return urirun.fail(str(cap.get("error", "capture failed")),
-                               connector=CONNECTOR_ID, device=device_used, backend=cap.get("backend"),
-                               attempts=cap.get("attempts", []))
+    photo, device_used, beep_result, err = _analyze_obtain_photo(
+        image, device, out_dir, backend, warmup, width, height, timeout,
+        beep, beep_required, beep_frequency, beep_duration_ms, beep_count)
+    if err is not None:
+        return err
     w, h = _image_size(photo)
     return _tag(urirun.ok(connector=CONNECTOR_ID, device=device_used,
                      photo={"path": photo, "width": w, "height": h, "bytes": os.path.getsize(photo)},
@@ -936,6 +951,19 @@ def _inspect_build_alerts(
 
     Returns (alerts, ocr_text, brightness) — all three are needed by the caller."""
     ocr_text = str((res.get("ocr") or {}).get("text") or "")
+    alerts = _inspect_text_alerts(ocr_text, required_text, forbidden_text, min_chars)
+    if require_object and not bool((res.get("object") or {}).get("found")):
+        alerts.append({"code": "OBJECT_MISSING", "message": "dominant object was not detected"})
+    basic = _describe_basic((res.get("photo") or {}).get("path", ""))
+    brightness = basic.get("brightness")
+    alerts.extend(_inspect_brightness_alerts(brightness, brightness_min, brightness_max))
+    return alerts, ocr_text, brightness
+
+
+def _inspect_text_alerts(
+    ocr_text: str, required_text: str, forbidden_text: str, min_chars: int
+) -> "list[dict[str, Any]]":
+    """Evaluate the OCR-text inspection rules."""
     alerts: list[dict[str, Any]] = []
     if required_text and not _contains(ocr_text, required_text):
         alerts.append({"code": "TEXT_MISSING", "message": f"required text not found: {required_text}"})
@@ -944,10 +972,14 @@ def _inspect_build_alerts(
     if int(min_chars) > 0 and len(ocr_text.strip()) < int(min_chars):
         alerts.append({"code": "LOW_TEXT", "message": f"OCR text shorter than {min_chars} chars",
                        "chars": len(ocr_text.strip())})
-    if require_object and not bool((res.get("object") or {}).get("found")):
-        alerts.append({"code": "OBJECT_MISSING", "message": "dominant object was not detected"})
-    basic = _describe_basic((res.get("photo") or {}).get("path", ""))
-    brightness = basic.get("brightness")
+    return alerts
+
+
+def _inspect_brightness_alerts(
+    brightness: Any, brightness_min: float, brightness_max: float
+) -> "list[dict[str, Any]]":
+    """Evaluate the brightness window inspection rules."""
+    alerts: list[dict[str, Any]] = []
     if isinstance(brightness, (int, float)):
         if brightness_min >= 0 and brightness < brightness_min:
             alerts.append({"code": "TOO_DARK",
@@ -957,7 +989,7 @@ def _inspect_build_alerts(
             alerts.append({"code": "TOO_BRIGHT",
                            "message": f"brightness {brightness} > {brightness_max}",
                            "brightness": brightness})
-    return alerts, ocr_text, brightness
+    return alerts
 
 
 def _inspect_log_results(
@@ -1066,6 +1098,57 @@ def inspect_photo(
     return _tag(urirun.ok(connector=CONNECTOR_ID, inspection=inspection, **payload), "inspection")
 
 
+def _compare_source_frames(
+    reference: str, image: str, device: str, out_dir: str, backend: str, warmup: int,
+    interval_ms: int, beep: bool, beep_frequency: int, timeout: int,
+) -> "tuple[str, str, str, dict[str, Any] | None]":
+    """Resolve the two frames to diff for `compare` (files / reference+capture / two-shot).
+
+    Returns (path_a, path_b, device_used, error_dict_or_None)."""
+    device_used = ""
+
+    def _grab(name: str) -> dict[str, Any]:
+        nonlocal device_used
+        device_used = _device_path(device) or _default_device()
+        if not device_used:
+            return {"ok": False, "error": "no camera device found (no /dev/video*)"}
+        dst = os.path.join(out_dir, name)
+        return _capture(device_used, dst, backend=backend, warmup=warmup, width=0, height=0, timeout=timeout)
+
+    if reference and image:                       # two supplied files
+        path_a, path_b = os.path.expanduser(reference), os.path.expanduser(image)
+        for p in (path_a, path_b):
+            if not os.path.isfile(p):
+                return "", "", device_used, urirun.fail(f"image not found: {p}", connector=CONNECTOR_ID)
+        return path_a, path_b, device_used, None
+    if reference:                                 # reference vs a fresh frame
+        path_a = os.path.expanduser(reference)
+        if not os.path.isfile(path_a):
+            return "", "", device_used, urirun.fail(f"reference not found: {path_a}", connector=CONNECTOR_ID)
+        beep_result = _audio_beep(beep, frequency=beep_frequency)
+        cap = _grab("current.jpg")
+        if not cap.get("ok"):
+            return "", "", device_used, urirun.fail(
+                str(cap.get("error", "capture failed")), connector=CONNECTOR_ID,
+                beep=beep_result, backend=cap.get("backend"), attempts=cap.get("attempts", []))
+        return path_a, cap["path"], device_used, None
+    # two-shot live motion detection
+    _audio_beep(beep, frequency=beep_frequency)
+    cap_a = _grab("frame_a.jpg")
+    if not cap_a.get("ok"):
+        return "", "", device_used, urirun.fail(
+            str(cap_a.get("error", "capture failed")), connector=CONNECTOR_ID,
+            backend=cap_a.get("backend"), attempts=cap_a.get("attempts", []))
+    if interval_ms > 0:
+        time.sleep(min(interval_ms, 10000) / 1000.0)
+    cap_b = _grab("frame_b.jpg")
+    if not cap_b.get("ok"):
+        return "", "", device_used, urirun.fail(
+            str(cap_b.get("error", "capture failed")), connector=CONNECTOR_ID,
+            backend=cap_b.get("backend"), attempts=cap_b.get("attempts", []))
+    return cap_a["path"], cap_b["path"], device_used, None
+
+
 @CAMERA.handler("photo/query/compare", isolated=True,
                 meta={"label": "Detect change/motion between two frames", "cliAlias": "compare"})
 def compare(device: str = "", reference: str = "", image: str = "", output_dir: str = "",
@@ -1083,48 +1166,11 @@ def compare(device: str = "", reference: str = "", image: str = "", output_dir: 
     beep_on_change / fail_on_change to alert or stop a flow on change."""
     out_dir = os.path.expanduser(output_dir) if output_dir else tempfile.mkdtemp(prefix="urirun-camera-")
     os.makedirs(out_dir, exist_ok=True)
-    device_used = ""
-    captured: list[str] = []
-
-    def _grab(name: str) -> dict[str, Any]:
-        nonlocal device_used
-        device_used = _device_path(device) or _default_device()
-        if not device_used:
-            return {"ok": False, "error": "no camera device found (no /dev/video*)"}
-        dst = os.path.join(out_dir, name)
-        cap = _capture(device_used, dst, backend=backend, warmup=warmup, width=0, height=0, timeout=timeout)
-        if cap.get("ok"):
-            captured.append(dst)
-        return cap
-
-    if reference and image:                       # two supplied files
-        path_a, path_b = os.path.expanduser(reference), os.path.expanduser(image)
-        for p in (path_a, path_b):
-            if not os.path.isfile(p):
-                return urirun.fail(f"image not found: {p}", connector=CONNECTOR_ID)
-    elif reference:                               # reference vs a fresh frame
-        path_a = os.path.expanduser(reference)
-        if not os.path.isfile(path_a):
-            return urirun.fail(f"reference not found: {path_a}", connector=CONNECTOR_ID)
-        beep_result = _audio_beep(beep, frequency=beep_frequency)
-        cap = _grab("current.jpg")
-        if not cap.get("ok"):
-            return urirun.fail(str(cap.get("error", "capture failed")), connector=CONNECTOR_ID,
-                               beep=beep_result, backend=cap.get("backend"), attempts=cap.get("attempts", []))
-        path_b = cap["path"]
-    else:                                         # two-shot live motion detection
-        beep_result = _audio_beep(beep, frequency=beep_frequency)
-        cap_a = _grab("frame_a.jpg")
-        if not cap_a.get("ok"):
-            return urirun.fail(str(cap_a.get("error", "capture failed")), connector=CONNECTOR_ID,
-                               backend=cap_a.get("backend"), attempts=cap_a.get("attempts", []))
-        if interval_ms > 0:
-            time.sleep(min(interval_ms, 10000) / 1000.0)
-        cap_b = _grab("frame_b.jpg")
-        if not cap_b.get("ok"):
-            return urirun.fail(str(cap_b.get("error", "capture failed")), connector=CONNECTOR_ID,
-                               backend=cap_b.get("backend"), attempts=cap_b.get("attempts", []))
-        path_a, path_b = cap_a["path"], cap_b["path"]
+    path_a, path_b, device_used, err = _compare_source_frames(
+        reference, image, device, out_dir, backend, warmup, interval_ms,
+        beep, beep_frequency, timeout)
+    if err is not None:
+        return err
 
     diff = _frame_diff(path_a, path_b, pixel_threshold=pixel_threshold, downscale=downscale)
     if not diff.get("ok"):
@@ -1155,25 +1201,11 @@ def read_barcodes(device: str = "", image: str = "", output_dir: str = "", backe
     seen — the trigger for 'scan the label, alert if the expected code is absent'."""
     out_dir = os.path.expanduser(output_dir) if output_dir else tempfile.mkdtemp(prefix="urirun-camera-")
     os.makedirs(out_dir, exist_ok=True)
-    device_used = ""
-    if image:
-        photo = os.path.expanduser(image)
-        if not os.path.isfile(photo):
-            return urirun.fail(f"image not found: {photo}", connector=CONNECTOR_ID)
-        beep_result = {"ok": True, "enabled": False, "reason": "existing image supplied"}
-    else:
-        device_used = _device_path(device) or _default_device()
-        if not device_used:
-            return urirun.fail("no camera device found (no /dev/video*)", connector=CONNECTOR_ID)
-        beep_result = _audio_beep(beep, frequency=beep_frequency)
-        if beep_required and not beep_result.get("ok"):
-            return urirun.fail(str(beep_result.get("error", "pre-scan beep failed")),
-                               connector=CONNECTOR_ID, device=device_used, beep=beep_result)
-        photo = os.path.join(out_dir, "photo.jpg")
-        cap = _capture(device_used, photo, backend=backend, warmup=warmup, width=0, height=0, timeout=timeout)
-        if not cap.get("ok"):
-            return urirun.fail(str(cap.get("error", "capture failed")), connector=CONNECTOR_ID,
-                               device=device_used, backend=cap.get("backend"), attempts=cap.get("attempts", []))
+    photo, device_used, beep_result, err = _analyze_obtain_photo(
+        image, device, out_dir, backend, warmup, 0, 0, timeout,
+        beep, beep_required, beep_frequency, 180, 1)
+    if err is not None:
+        return err
 
     result = _decode_barcodes(photo)
     codes = result.get("codes", [])
@@ -1282,27 +1314,34 @@ def ingest(bytes_b64: str = "", filename: str = "photo.jpg", action: str = "anal
         return urirun.fail(f"unknown action: {action} (use analyze|inspect|barcodes|describe|ocr|receipt)",
                            connector=CONNECTOR_ID)
 
-    value = res.get("result", res) if isinstance(res, dict) else {}
     if isinstance(res, dict):
-        res.setdefault("source", "browser-upload")
-        res["action"] = act
-        res["uploadBytes"] = size
-        res["photo"] = res.get("photo") or photo
-        # cache-vs-store: the frame/crop in out_dir are ephemeral; persist only the artifact.
-        if store and res.get("ok", True):
-            crop_src = (res.get("object") or {}).get("cropPath") or res.get("photo") or photo
-            artifact = _persist_artifact(crop_src, name=store_name)
-            res["artifact"] = artifact
-            res["stored"] = bool(artifact.get("ok"))
-        else:
-            res["stored"] = False
-            res["cache"] = True
+        _ingest_annotate_result(res, act, size, photo, store, store_name)
     # inspect/receipt already logged their own line; record the rest of the mobile uploads here
     if act in ("analyze", "barcodes", "ocr", "describe"):
         _ledger("ingest", action=act, source="browser-upload", uploadBytes=size,
                 ok=bool(isinstance(res, dict) and res.get("ok", True)),
                 stored=bool(isinstance(res, dict) and res.get("stored")))
     return res
+
+
+def _ingest_annotate_result(
+    res: dict[str, Any], act: str, size: int, photo: str, store: bool, store_name: str
+) -> None:
+    """Stamp upload metadata on an ingest result and persist the artifact when store=True.
+
+    Cache-vs-store: the frame/crop in the temp dir are ephemeral; only store=True persists."""
+    res.setdefault("source", "browser-upload")
+    res["action"] = act
+    res["uploadBytes"] = size
+    res["photo"] = res.get("photo") or photo
+    if store and res.get("ok", True):
+        crop_src = (res.get("object") or {}).get("cropPath") or res.get("photo") or photo
+        artifact = _persist_artifact(crop_src, name=store_name)
+        res["artifact"] = artifact
+        res["stored"] = bool(artifact.get("ok"))
+    else:
+        res["stored"] = False
+        res["cache"] = True
 
 
 # receipt parsing extracted to _camera_receipt

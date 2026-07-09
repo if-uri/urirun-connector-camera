@@ -20,11 +20,8 @@ def _to_amount(whole: str, cents: str) -> float:
     return round(int(whole.replace(" ", "").replace(" ", "")) + int(cents) / 100.0, 2)
 
 
-def _parse_receipt(text: str) -> dict[str, Any]:
-    """Turn raw receipt OCR text into structured data: line items (name + price), the total,
-    currency, date and NIP. Heuristic and locale-tolerant (PL/EN) — every field is best
-    effort and may be null when the print/OCR is too noisy."""
-    lines = [ln.strip() for ln in (text or "").splitlines() if ln.strip()]
+def _parse_receipt_lines(lines: "list[str]") -> "tuple[list[dict[str, Any]], float | None]":
+    """Extract (items, total) from receipt lines; a total/sum keyword line sets the total."""
     items: list[dict[str, Any]] = []
     total: float | None = None
     for line in lines:
@@ -40,12 +37,24 @@ def _parse_receipt(text: str) -> dict[str, Any]:
         name = re.sub(r"\s{2,}", " ", name)
         if len(name) >= 2:
             items.append({"name": name, "price": amount})
+    return items, total
 
-    currency = None
+
+def _detect_currency(text: str) -> "str | None":
+    folded = _fold(text)
     for cur, pat in (("PLN", r"\bpln\b|z[lł]\b"), ("EUR", r"\beur\b|€"), ("USD", r"\busd\b|\$")):
-        if re.search(pat, _fold(text)):
-            currency = cur
-            break
+        if re.search(pat, folded):
+            return cur
+    return None
+
+
+def _parse_receipt(text: str) -> dict[str, Any]:
+    """Turn raw receipt OCR text into structured data: line items (name + price), the total,
+    currency, date and NIP. Heuristic and locale-tolerant (PL/EN) — every field is best
+    effort and may be null when the print/OCR is too noisy."""
+    lines = [ln.strip() for ln in (text or "").splitlines() if ln.strip()]
+    items, total = _parse_receipt_lines(lines)
+    currency = _detect_currency(text)
     date_m = _DATE_RE.search(text or "")
     nip_m = _NIP_RE.search(text or "")
     items_sum = round(sum(i["price"] for i in items), 2)
