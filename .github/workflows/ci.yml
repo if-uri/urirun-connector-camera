@@ -1,0 +1,7 @@
+name: ci
+on: [push, pull_request]
+jobs:
+  ci:
+    uses: if-uri/urirun/.github/workflows/connector-ci.yml@main
+    with:
+      lang: python
